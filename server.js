@@ -64,9 +64,49 @@ const app  = express();
 const PORT = process.env.PORT || 3333;
 
 // ── Payment config ─────────────────────────────────────────────────────────
-const CLIENT_URL   = process.env.CLIENT_URL   || 'https://welias123.github.io/pulsewave-website';
-const PAYPAL_LINK  = process.env.PAYPAL_LINK  || '';   // e.g. https://paypal.me/yourname/2
-const PRICE_EUR    = process.env.PRICE_EUR    || '2';  // monthly price shown to users
+const CLIENT_URL        = process.env.CLIENT_URL        || 'https://welias123.github.io/pulsewave-website';
+const PAYPAL_BUTTON_ID  = process.env.PAYPAL_BUTTON_ID  || '';   // hosted_button_id from PayPal
+const PRICE_EUR         = process.env.PRICE_EUR         || '2';  // monthly price shown to users
+// PayPal IPN verification URL (use sandbox for testing)
+const PAYPAL_VERIFY_URL = process.env.PAYPAL_SANDBOX === 'true'
+  ? 'https://ipnpb.sandbox.paypal.com/cgi-bin/webscr'
+  : 'https://ipnpb.paypal.com/cgi-bin/webscr';
+
+// ── PayPal IPN verifier (uses Node built-in https) ─────────────────────────
+function verifyPaypalIPN(body) {
+  return new Promise((resolve, reject) => {
+    const payload = 'cmd=_notify-validate&' + body;
+    const https   = require('https');
+    const url     = new URL(PAYPAL_VERIFY_URL);
+    const opts    = {
+      hostname: url.hostname,
+      path:     url.pathname,
+      method:   'POST',
+      headers:  {
+        'Content-Type':   'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(payload),
+        'User-Agent':     'Pulsewave-IPN/1.0'
+      }
+    };
+    const req = https.request(opts, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => resolve(data.trim()));
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ── Find user by PayPal subscription ID ────────────────────────────────────
+async function findByPaypalSubscr(subscrId) {
+  if (pool) {
+    const r = await pool.query('SELECT * FROM users WHERE paypal_subscr_id=$1', [subscrId]);
+    return r.rows[0] || null;
+  }
+  return loadDB().users.find(u => u.paypal_subscr_id === subscrId) || null;
+}
 
 // ── Admin password (auto-generated once, stored in data/.adminpw) ──────────
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (() => {
@@ -181,7 +221,10 @@ async function deleteById(id) {
 
 // ── Middleware ────────────────────────────────────────────────────────────
 app.use(cors({ origin:'*', credentials:true }));
+// Raw body needed for PayPal IPN (must be before express.json())
+app.use('/api/paypal-ipn', express.raw({ type: '*/*' }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname,'public')));
 
 // ── Auth middleware ────────────────────────────────────────────────────────
@@ -294,6 +337,67 @@ app.get('/api/me', requireAuth, async (req,res) => {
   } catch { res.json({ user:{ id:req.user.userId, username:req.user.username, email:req.user.email, is_premium:false } }); }
 });
 
+// ── POST /api/paypal-ipn — PayPal Instant Payment Notification ───────────────
+// PayPal calls this automatically on every payment, renewal, cancellation.
+// Custom field format: "pw:USERNAME" (set when creating the subscription)
+app.post('/api/paypal-ipn', async (req, res) => {
+  // Must respond 200 immediately
+  res.status(200).end();
+
+  try {
+    const rawBody = req.body.toString('utf8');
+    const params  = new URLSearchParams(rawBody);
+    const txnType = params.get('txn_type') || '';
+    const status  = params.get('payment_status') || '';
+    const custom  = params.get('custom') || '';        // "pw:USERNAME"
+    const subscrId= params.get('subscr_id') || '';
+    const payerEmail = params.get('payer_email') || '';
+
+    console.log(`[PayPal IPN] txn_type=${txnType} status=${status} custom=${custom} subscr_id=${subscrId}`);
+
+    // Verify with PayPal (returns "VERIFIED" or "INVALID")
+    const verification = await verifyPaypalIPN(rawBody);
+    if (verification !== 'VERIFIED') {
+      console.warn('[PayPal IPN] ⚠️  Not verified:', verification);
+      return;
+    }
+
+    // Extract username from custom field "pw:USERNAME"
+    const username = custom.startsWith('pw:') ? custom.slice(3).trim() : custom.trim();
+
+    if (txnType === 'subscr_payment' && status === 'Completed') {
+      // ── Monthly payment received → activate / keep premium ──────────────
+      const user = username ? await findByUsername(username) : null;
+      if (user) {
+        await updateUser(user.id, { is_premium: true, paypal_subscr_id: subscrId, paypal_email: payerEmail });
+        console.log(`✅ [PayPal] Premium activated for "${username}" (subscr_id=${subscrId})`);
+      } else {
+        console.warn(`[PayPal IPN] ⚠️  Unknown username: "${username}"`);
+      }
+
+    } else if (txnType === 'subscr_signup') {
+      // ── Subscription created (first signup, payment comes separately) ───
+      console.log(`[PayPal] New subscription signup for "${username}" (subscr_id=${subscrId})`);
+
+    } else if (['subscr_cancel', 'subscr_eot', 'subscr_failed', 'subscr_modify'].includes(txnType)) {
+      // ── Subscription cancelled / ended / failed → remove premium ────────
+      let user = subscrId ? await findByPaypalSubscr(subscrId) : null;
+      if (!user && username) user = await findByUsername(username);
+      if (user) {
+        if (txnType === 'subscr_cancel' || txnType === 'subscr_eot') {
+          await updateUser(user.id, { is_premium: false, paypal_subscr_id: null });
+          console.log(`❌ [PayPal] Premium removed for "${user.username}" (${txnType})`);
+        } else if (txnType === 'subscr_failed') {
+          // Failed payment — give a grace period (keep premium for now, PayPal will retry)
+          console.log(`⚠️  [PayPal] Payment failed for "${user.username}" — keeping premium during retry period`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[PayPal IPN] Error:', e.message);
+  }
+});
+
 // ── POST /api/redeem-code-app — Electron app code redemption (no JWT needed) ──
 // The app uses local auth, so we just verify the code and mark it used.
 // Premium status is then stored locally in the Electron app.
@@ -325,10 +429,8 @@ app.get('/api/payment-info', (req, res) => {
   res.json({
     price: PRICE_EUR,
     currency: 'EUR',
-    paypalLink: PAYPAL_LINK,
-    instructions: PAYPAL_LINK
-      ? `Schick €${PRICE_EUR}/Monat an ${PAYPAL_LINK} — trag deinen Pulsewave-Benutzernamen als Betreff ein. Du bekommst dann einen Aktivierungscode.`
-      : `Kontaktiere den Administrator, um einen Aktivierungscode zu erhalten.`
+    paypalButtonId: PAYPAL_BUTTON_ID,
+    hasPaypal: !!PAYPAL_BUTTON_ID
   });
 });
 
