@@ -63,17 +63,40 @@ async function sendVerificationEmail(email, username, code) {
 const app  = express();
 const PORT = process.env.PORT || 3333;
 
-// ── Stripe (optional — set STRIPE_SECRET_KEY env var to enable) ───────────
-let stripe = null;
-if (process.env.STRIPE_SECRET_KEY) {
-  stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-  console.log('💳 Stripe enabled');
-} else {
-  console.log('⚠️  Stripe disabled (set STRIPE_SECRET_KEY to enable payments)');
+// ── Payment config ─────────────────────────────────────────────────────────
+const CLIENT_URL   = process.env.CLIENT_URL   || 'https://welias123.github.io/pulsewave-website';
+const PAYPAL_LINK  = process.env.PAYPAL_LINK  || '';   // e.g. https://paypal.me/yourname/2
+const PRICE_EUR    = process.env.PRICE_EUR    || '2';  // monthly price shown to users
+
+// ── Admin password (auto-generated once, stored in data/.adminpw) ──────────
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (() => {
+  const f = path.join(__dirname, 'data', '.adminpw');
+  if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim();
+  const pw = 'PW-' + crypto.randomBytes(6).toString('hex').toUpperCase();
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, pw);
+  return pw;
+})();
+
+// ── Activation Codes ────────────────────────────────────────────────────────
+const CODES_FILE = path.join(__dirname, 'data', 'codes.json');
+function loadCodes() {
+  try { return JSON.parse(fs.readFileSync(CODES_FILE, 'utf8')); } catch { return []; }
 }
-const STRIPE_PRICE_ID      = process.env.STRIPE_PRICE_ID      || '';
-const STRIPE_WEBHOOK_SECRET= process.env.STRIPE_WEBHOOK_SECRET || '';
-const CLIENT_URL           = process.env.CLIENT_URL || 'https://welias123.github.io/pulsewave-website';
+function saveCodes(codes) {
+  fs.mkdirSync(path.dirname(CODES_FILE), { recursive: true });
+  fs.writeFileSync(CODES_FILE, JSON.stringify(codes, null, 2));
+}
+function makeActivationCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous I,O,0,1
+  const grp   = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `PULSE-${grp()}-${grp()}-${grp()}`;
+}
+function requireAdmin(req, res, next) {
+  const pw = req.headers['x-admin-password'] || req.body?.adminPassword;
+  if (!pw || pw !== ADMIN_PASSWORD) return res.status(401).json({ error: 'Falsches Admin-Passwort' });
+  next();
+}
 
 // ── JWT Secret ────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
@@ -128,10 +151,7 @@ async function findById(id) {
   if (pool) { const r = await pool.query('SELECT * FROM users WHERE id=$1',[id]); return r.rows[0]||null; }
   return loadDB().users.find(u=>u.id===id)||null;
 }
-async function findByStripeCustomer(customerId) {
-  if (pool) { const r = await pool.query('SELECT * FROM users WHERE stripe_customer_id=$1',[customerId]); return r.rows[0]||null; }
-  return loadDB().users.find(u=>u.stripe_customer_id===customerId)||null;
-}
+async function findByStripeCustomer(customerId) { return null; } // legacy stub
 async function insertUser(email, username, hash) {
   if (pool) {
     const r = await pool.query(
@@ -161,9 +181,6 @@ async function deleteById(id) {
 
 // ── Middleware ────────────────────────────────────────────────────────────
 app.use(cors({ origin:'*', credentials:true }));
-
-// Raw body for Stripe webhooks (must be before express.json())
-app.use('/api/webhook', express.raw({ type:'application/json' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname,'public')));
 
@@ -277,104 +294,154 @@ app.get('/api/me', requireAuth, async (req,res) => {
   } catch { res.json({ user:{ id:req.user.userId, username:req.user.username, email:req.user.email, is_premium:false } }); }
 });
 
-// ── POST /api/create-checkout ─────────────────────────────────────────────
-app.post('/api/create-checkout', requireAuth, async (req,res) => {
-  if (!stripe) return res.status(503).json({ error:'Zahlungen noch nicht eingerichtet. Stripe-Key fehlt.' });
-  if (!STRIPE_PRICE_ID) return res.status(503).json({ error:'Kein Stripe-Preis konfiguriert.' });
-  try {
-    let user = await findById(req.user.userId);
-    // Create Stripe customer if not exists
-    let customerId = user?.stripe_customer_id;
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: req.user.email,
-        metadata: { userId: String(req.user.userId), username: req.user.username }
-      });
-      customerId = customer.id;
-      await updateUser(req.user.userId, { stripe_customer_id: customerId });
-    }
-    // Create checkout session
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
-      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
-      mode: 'subscription',
-      success_url: `${CLIENT_URL}?premium=success`,
-      cancel_url:  `${CLIENT_URL}?premium=cancel`,
-      metadata: { userId: String(req.user.userId) }
-    });
-    res.json({ url: session.url });
-  } catch(e) { console.error(e); res.status(500).json({ error:'Checkout fehlgeschlagen: '+e.message }); }
+// ── POST /api/redeem-code-app — Electron app code redemption (no JWT needed) ──
+// The app uses local auth, so we just verify the code and mark it used.
+// Premium status is then stored locally in the Electron app.
+app.post('/api/redeem-code-app', async (req, res) => {
+  const { code, username } = req.body;
+  if (!code) return res.status(400).json({ error: 'Code fehlt' });
+
+  const normalized = code.trim().toUpperCase().replace(/\s/g, '');
+  const codes = loadCodes();
+  const idx = codes.findIndex(c => c.code === normalized && !c.usedBy);
+
+  if (idx === -1) {
+    const already = codes.find(c => c.code === normalized);
+    if (already) return res.status(409).json({ error: 'Dieser Code wurde bereits eingelöst' });
+    return res.status(404).json({ error: 'Ungültiger Code — bitte prüfen' });
+  }
+
+  codes[idx].usedBy   = username || 'electron-app';
+  codes[idx].usedAt   = new Date().toISOString();
+  codes[idx].username = username || 'app-user';
+  saveCodes(codes);
+
+  console.log(`⭐ Electron user "${username}" activated Premium with code ${normalized}`);
+  res.json({ ok: true, message: '🎉 Premium aktiviert!' });
 });
 
-// ── GET /api/subscription ──────────────────────────────────────────────────
-app.get('/api/subscription', requireAuth, async (req,res) => {
+// ── GET /api/payment-info — public: what does premium cost + how to pay ──────
+app.get('/api/payment-info', (req, res) => {
+  res.json({
+    price: PRICE_EUR,
+    currency: 'EUR',
+    paypalLink: PAYPAL_LINK,
+    instructions: PAYPAL_LINK
+      ? `Schick €${PRICE_EUR}/Monat an ${PAYPAL_LINK} — trag deinen Pulsewave-Benutzernamen als Betreff ein. Du bekommst dann einen Aktivierungscode.`
+      : `Kontaktiere den Administrator, um einen Aktivierungscode zu erhalten.`
+  });
+});
+
+// ── POST /api/redeem-code — user redeems an activation code ──────────────
+app.post('/api/redeem-code', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'Code fehlt' });
+
+  const normalized = code.trim().toUpperCase().replace(/\s/g, '');
+  const codes = loadCodes();
+  const idx = codes.findIndex(c => c.code === normalized && !c.usedBy);
+
+  if (idx === -1) {
+    const already = codes.find(c => c.code === normalized && c.usedBy);
+    if (already) return res.status(409).json({ error: 'Dieser Code wurde bereits eingelöst' });
+    return res.status(404).json({ error: 'Ungültiger Code — bitte prüfen' });
+  }
+
+  // Mark code as used
+  codes[idx].usedBy   = req.user.userId;
+  codes[idx].usedAt   = new Date().toISOString();
+  codes[idx].username = req.user.username;
+  saveCodes(codes);
+
+  // Activate premium
+  await updateUser(req.user.userId, { is_premium: true });
+  console.log(`⭐ User ${req.user.username} (${req.user.userId}) activated Premium with code ${normalized}`);
+  res.json({ ok: true, message: '🎉 Premium aktiviert! Genieße Pulsewave ohne Werbung.' });
+});
+
+// ── GET /api/subscription — current premium status ────────────────────────
+app.get('/api/subscription', requireAuth, async (req, res) => {
   try {
     const user = await findById(req.user.userId);
-    res.json({ is_premium: user?.is_premium||false, stripe_customer_id: user?.stripe_customer_id||null });
-  } catch { res.json({ is_premium:false }); }
+    res.json({ is_premium: user?.is_premium || false });
+  } catch { res.json({ is_premium: false }); }
 });
 
-// ── POST /api/cancel-subscription ─────────────────────────────────────────
-app.post('/api/cancel-subscription', requireAuth, async (req,res) => {
-  if (!stripe) return res.status(503).json({ error:'Stripe nicht konfiguriert' });
+// ── POST /api/cancel-subscription — user cancels premium ──────────────────
+app.post('/api/cancel-subscription', requireAuth, async (req, res) => {
   try {
-    const user = await findById(req.user.userId);
-    if (!user?.stripe_subscription_id) return res.status(400).json({ error:'Kein aktives Abo' });
-    await stripe.subscriptions.cancel(user.stripe_subscription_id);
-    await updateUser(req.user.userId, { is_premium:false, stripe_subscription_id:null });
-    res.json({ ok:true, message:'Abo erfolgreich gekündigt' });
-  } catch(e) { res.status(500).json({ error:e.message }); }
+    await updateUser(req.user.userId, { is_premium: false });
+    res.json({ ok: true, message: 'Premium wurde deaktiviert' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /api/webhook (Stripe) ─────────────────────────────────────────────
-app.post('/api/webhook', async (req,res) => {
-  if (!stripe) return res.status(200).json({ received:true });
-  let event;
-  try {
-    event = STRIPE_WEBHOOK_SECRET
-      ? stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET)
-      : JSON.parse(req.body.toString());
-  } catch(e) { return res.status(400).send(`Webhook Error: ${e.message}`); }
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN ENDPOINTS (require x-admin-password header)
+// ═══════════════════════════════════════════════════════════════════════════
 
+// ── POST /api/admin/generate-code — generate one or more codes ─────────────
+app.post('/api/admin/generate-code', requireAdmin, (req, res) => {
+  const count = Math.min(parseInt(req.body.count) || 1, 50);
+  const codes = loadCodes();
+  const newCodes = [];
+  for (let i = 0; i < count; i++) {
+    const code = makeActivationCode();
+    const entry = { code, createdAt: new Date().toISOString(), usedBy: null, note: req.body.note || '' };
+    codes.push(entry);
+    newCodes.push(entry);
+  }
+  saveCodes(codes);
+  console.log(`🔑 Admin generated ${count} code(s)`);
+  res.json({ ok: true, codes: newCodes });
+});
+
+// ── GET /api/admin/codes — list all codes ─────────────────────────────────
+app.get('/api/admin/codes', requireAdmin, (req, res) => {
+  res.json({ codes: loadCodes() });
+});
+
+// ── DELETE /api/admin/codes/:code — delete / revoke a code ────────────────
+app.delete('/api/admin/codes/:code', requireAdmin, (req, res) => {
+  const target = req.params.code.toUpperCase();
+  let codes = loadCodes();
+  codes = codes.filter(c => c.code !== target);
+  saveCodes(codes);
+  res.json({ ok: true });
+});
+
+// ── GET /api/admin/users — list all users (admin) ─────────────────────────
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    switch(event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        const userId = parseInt(session.metadata?.userId);
-        if (userId) {
-          await updateUser(userId, {
-            is_premium: true,
-            stripe_subscription_id: session.subscription
-          });
-          console.log(`✅ User ${userId} upgraded to Premium`);
-        }
-        break;
-      }
-      case 'customer.subscription.deleted':
-      case 'customer.subscription.paused': {
-        const sub = event.data.object;
-        const user = await findByStripeCustomer(sub.customer);
-        if (user) {
-          await updateUser(user.id, { is_premium:false, stripe_subscription_id:null });
-          console.log(`❌ User ${user.id} Premium cancelled`);
-        }
-        break;
-      }
-      case 'invoice.payment_failed': {
-        console.log('⚠️  Payment failed for:', event.data.object.customer);
-        break;
-      }
+    if (pool) {
+      const r = await pool.query('SELECT id, username, email, is_premium, created_at FROM users ORDER BY id DESC');
+      return res.json({ users: r.rows });
     }
-  } catch(e) { console.error('Webhook handler error:', e); }
+    const db = loadDB();
+    res.json({ users: db.users.map(u => ({ id:u.id, username:u.username, email:u.email, is_premium:u.is_premium||false, created_at:u.createdAt||u.created_at })) });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 
-  res.json({ received:true });
+// ── POST /api/admin/set-premium — manually set premium for a user ──────────
+app.post('/api/admin/set-premium', requireAdmin, async (req, res) => {
+  const { username, isPremium } = req.body;
+  const user = await findByUsername(username);
+  if (!user) return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+  await updateUser(user.id, { is_premium: !!isPremium });
+  res.json({ ok: true, username, is_premium: !!isPremium });
 });
 
 // ── DELETE /api/account ────────────────────────────────────────────────────
 app.delete('/api/account', requireAuth, async (req,res) => {
   await deleteById(req.user.userId);
   res.json({ ok:true });
+});
+
+// ── GET /api/status — returns current tunnel URL ───────────────────────────
+app.get('/api/status', (req,res) => {
+  const urlFile = require('path').join(__dirname,'tunnel-url.json');
+  let tunnelUrl = null;
+  try { tunnelUrl = JSON.parse(require('fs').readFileSync(urlFile,'utf8')).url; } catch(e) {}
+  res.json({ ok: true, tunnelUrl, version: '1.1.0' });
 });
 
 // ── GET /api/search — YouTube search via yt-dlp (with cache) ─────────────
@@ -427,6 +494,11 @@ app.get('/api/search', async (req,res) => {
   });
 });
 
+// ── Admin panel ───────────────────────────────────────────────────────────
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
 // ── SPA fallback ───────────────────────────────────────────────────────────
 app.get('*', (req,res) => {
   const f = require('path').join(__dirname,'public','index.html');
@@ -436,7 +508,8 @@ app.get('*', (req,res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🎵 Pulsewave server on http://localhost:${PORT}`);
-  console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · Stripe: ${stripe?'enabled':'disabled'}`);
+  console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · PayPal: ${PAYPAL_LINK||'(not set)'}`);
+  console.log(`\n🔑 Admin-Passwort: ${ADMIN_PASSWORD}\n   Admin-Panel: http://localhost:${PORT}/admin\n`);
 
   // Pre-warm search cache for all radio station queries so they respond instantly
   const PREWARM = [

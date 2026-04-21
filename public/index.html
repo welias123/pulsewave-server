@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pulsewave — Your Music, Your Way</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="css/style.css"/>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="#">
+      <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
+        <path d="M14 34 L14 18 L28 14 L28 26" stroke="#FFD600" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="11" cy="34" r="4" fill="#FFD600"/>
+        <circle cx="25" cy="26" r="4" fill="#FFD600"/>
+      </svg>
+      Pulsewave
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+    </div>
+    <a href="#auth" class="nav-cta" onclick="openAuth('login')">Sign In</a>
+  </div>
+</nav>
+
+<!-- AUTH MODAL -->
+<div id="auth-overlay" class="auth-overlay" style="display:none" onclick="if(event.target===this)closeAuth()">
+  <div class="auth-modal">
+    <button class="auth-close" onclick="closeAuth()">✕</button>
+
+    <div class="auth-brand">
+      <svg width="36" height="36" viewBox="0 0 48 48" fill="none">
+        <path d="M14 34 L14 18 L28 14 L28 26" stroke="#FFD600" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="11" cy="34" r="4" fill="#FFD600"/>
+        <circle cx="25" cy="26" r="4" fill="#FFD600"/>
+      </svg>
+      <span>Pulsewave</span>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tab-login" onclick="switchTab('login')">Anmelden</button>
+      <button class="auth-tab" id="tab-register" onclick="switchTab('register')">Registrieren</button>
+    </div>
+
+    <!-- Login -->
+    <form id="form-login" class="auth-form" onsubmit="doLogin(event)">
+      <div class="field">
+        <label>E-Mail</label>
+        <input type="email" id="l-email" placeholder="deine@email.de" required autocomplete="email"/>
+      </div>
+      <div class="field">
+        <label>Passwort</label>
+        <div class="pw-wrap">
+          <input type="password" id="l-pass" placeholder="Dein Passwort" required autocomplete="current-password"/>
+          <button type="button" class="pw-eye" onclick="togglePw('l-pass',this)">👁</button>
+        </div>
+      </div>
+      <div class="auth-error" id="l-err"></div>
+      <button type="submit" class="auth-btn" id="l-btn">
+        <span>Anmelden</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <p class="auth-switch">Noch kein Account? <a href="#" onclick="switchTab('register')">Registrieren</a></p>
+    </form>
+
+    <!-- Register -->
+    <form id="form-register" class="auth-form" style="display:none" onsubmit="doRegister(event)">
+      <div class="field">
+        <label>Benutzername</label>
+        <input type="text" id="r-user" placeholder="DeinName123" required autocomplete="username"
+               oninput="checkUsername(this)"/>
+        <div class="field-hint" id="r-user-hint"></div>
+      </div>
+      <div class="field">
+        <label>E-Mail</label>
+        <input type="email" id="r-email" placeholder="deine@email.de" required autocomplete="email"/>
+      </div>
+      <div class="field">
+        <label>Passwort</label>
+        <div class="pw-wrap">
+          <input type="password" id="r-pass" placeholder="Mindestens 6 Zeichen" required autocomplete="new-password"
+                 oninput="checkPwStrength(this)"/>
+          <button type="button" class="pw-eye" onclick="togglePw('r-pass',this)">👁</button>
+        </div>
+        <div class="pw-strength">
+          <div class="pw-bar" id="pw-bar"></div>
+        </div>
+        <div class="field-hint" id="pw-hint"></div>
+      </div>
+      <div class="field">
+        <label>Passwort bestätigen</label>
+        <div class="pw-wrap">
+          <input type="password" id="r-pass2" placeholder="Passwort wiederholen" required autocomplete="new-password"/>
+          <button type="button" class="pw-eye" onclick="togglePw('r-pass2',this)">👁</button>
+        </div>
+      </div>
+      <div class="auth-error" id="r-err"></div>
+      <button type="submit" class="auth-btn" id="r-btn">
+        <span>Account erstellen</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <p class="auth-switch">Schon ein Account? <a href="#" onclick="switchTab('login')">Anmelden</a></p>
+    </form>
+  </div>
+</div>
+
+<!-- SUCCESS TOAST -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-inner">
+    <div class="hero-badge">🎵 Kostenlos &amp; Open Source</div>
+    <h1 class="hero-title">
+      Deine Musik.<br/>
+      <span class="gradient-text">Dein Weg.</span>
+    </h1>
+    <p class="hero-sub">
+      Zugriff auf praktisch jeden Song der Welt. Perfekter Sound mit 7-Band-Equalizer.
+      Playlists. Alles in einer wunderschönen Desktop-App.
+    </p>
+    <div class="hero-btns">
+      <a href="#download" class="btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Jetzt herunterladen
+      </a>
+      <a href="#" class="btn-ghost" onclick="openAuth('register')">Account erstellen →</a>
+    </div>
+    <p class="hero-note">Windows &amp; Linux · Kostenlos für immer · Kein Abo</p>
+  </div>
+
+  <div class="hero-app">
+    <div class="app-window">
+      <div class="app-titlebar">
+        <div class="app-dots"><span></span><span></span><span></span></div>
+        <span class="app-title-text">Pulsewave</span>
+      </div>
+      <div class="app-body">
+        <div class="app-sidebar">
+          <div class="app-logo-mini">
+            <svg width="16" height="16" viewBox="0 0 48 48" fill="none"><path d="M14 34 L14 18 L28 14 L28 26" stroke="#FFD600" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="11" cy="34" r="4" fill="#FFD600"/><circle cx="25" cy="26" r="4" fill="#FFD600"/></svg>
+            <span>Pulsewave</span>
+          </div>
+          <div class="app-nav-items">
+            <div class="app-nav active">🏠 Home</div>
+            <div class="app-nav">🔍 Suche</div>
+            <div class="app-nav">♥ Favoriten</div>
+            <div class="app-nav">🕐 Verlauf</div>
+          </div>
+          <div class="app-pl-section">
+            <div class="app-pl-header">Playlists</div>
+            <div class="app-pl-item">Summer Hits</div>
+            <div class="app-pl-item">Late Night</div>
+            <div class="app-pl-item">Workout</div>
+          </div>
+        </div>
+        <div class="app-main">
+          <div class="app-section-title">Top Hits 2024</div>
+          <div class="app-cards">
+            <div class="app-card"><div class="app-card-art" style="background:linear-gradient(135deg,#e14,#a02)"></div><div class="app-card-info"><div class="app-card-t">Blinding Lights</div><div class="app-card-a">The Weeknd</div></div></div>
+            <div class="app-card"><div class="app-card-art" style="background:linear-gradient(135deg,#26d,#159)"></div><div class="app-card-info"><div class="app-card-t">Flowers</div><div class="app-card-a">Miley Cyrus</div></div></div>
+            <div class="app-card"><div class="app-card-art" style="background:linear-gradient(135deg,#a2c,#73a)"></div><div class="app-card-info"><div class="app-card-t">Anti-Hero</div><div class="app-card-a">Taylor Swift</div></div></div>
+            <div class="app-card"><div class="app-card-art" style="background:linear-gradient(135deg,#d80,#a50)"></div><div class="app-card-info"><div class="app-card-t">As It Was</div><div class="app-card-a">Harry Styles</div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="app-player">
+        <div class="app-player-art" style="background:linear-gradient(135deg,#e14,#a02)"></div>
+        <div class="app-player-meta"><div class="app-player-t">Blinding Lights</div><div class="app-player-a">The Weeknd</div></div>
+        <div class="app-player-ctrl">
+          <div class="app-ctrl-btns">⏮ ▶ ⏭</div>
+          <div class="app-progress"><div class="app-progress-fill"></div></div>
+        </div>
+        <div class="app-player-eq">
+          <div class="app-eq-bar" style="--h:30%"></div><div class="app-eq-bar" style="--h:60%"></div>
+          <div class="app-eq-bar" style="--h:45%"></div><div class="app-eq-bar" style="--h:80%"></div>
+          <div class="app-eq-bar" style="--h:55%"></div><div class="app-eq-bar" style="--h:35%"></div>
+          <div class="app-eq-bar" style="--h:70%"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="section-inner">
+    <p class="section-eyebrow">Warum Pulsewave</p>
+    <h2 class="section-heading">Alles was du brauchst.<br/>Nichts was du nicht brauchst.</h2>
+    <div class="features-grid">
+      <div class="feature-card"><div class="feature-icon">🎵</div><h3>Riesige Bibliothek</h3><p>Streame praktisch jeden Song der Welt. Powered by den größten Musikindex der Welt.</p></div>
+      <div class="feature-card highlight"><div class="feature-icon">🎛️</div><h3>7-Band Equalizer</h3><p>Perfektionier jeden Frequenzbereich. Mehr Bass, weniger Höhen oder wähle aus 6 Presets — Flat, Bass Boost, Vocal, Rock, Electronic, Classical.</p></div>
+      <div class="feature-card"><div class="feature-icon">📝</div><h3>Playlists</h3><p>Erstelle unbegrenzte Playlists, füge Songs hinzu, benenne sie um — alles lokal gespeichert.</p></div>
+      <div class="feature-card"><div class="feature-icon">♥</div><h3>Lieblingssongs</h3><p>Herzchen bei einem Song und er ist sofort in deinen Favoriten gespeichert.</p></div>
+      <div class="feature-card"><div class="feature-icon">🔒</div><h3>Echter Account</h3><p>Registriere dich mit E-Mail, Benutzername und Passwort. Deine Daten bleiben sicher — Passwörter werden gehasht, nie im Klartext gespeichert.</p></div>
+      <div class="feature-card"><div class="feature-icon">⚡</div><h3>Shuffle &amp; Repeat</h3><p>Volle Queue-Verwaltung mit Shuffle, Repeat All und Repeat One.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- EQ SHOWCASE -->
+<section class="eq-showcase">
+  <div class="section-inner eq-inner">
+    <div class="eq-text">
+      <p class="section-eyebrow">Sound-Tuning</p>
+      <h2>Deine Ohren.<br/>Dein Sound.</h2>
+      <p class="eq-desc">Pulsewave's 7-Band Equalizer gibt dir die volle Kontrolle über jeden Frequenzbereich — von tiefem Sub-Bass bis zu kristallklaren Höhen.</p>
+      <div class="eq-presets-list">
+        <div class="eq-preset-tag active">Flat</div>
+        <div class="eq-preset-tag">Bass Boost</div>
+        <div class="eq-preset-tag">Vocal</div>
+        <div class="eq-preset-tag">Rock</div>
+        <div class="eq-preset-tag">Electronic</div>
+        <div class="eq-preset-tag">Classical</div>
+      </div>
+    </div>
+    <div class="eq-visual">
+      <div class="eq-visual-inner">
+        <div class="eq-band-vis" id="eq-sub" style="--h:40%"><span>Sub</span></div>
+        <div class="eq-band-vis" id="eq-bass" style="--h:75%"><span>Bass</span></div>
+        <div class="eq-band-vis" id="eq-loMid" style="--h:55%"><span>Low Mid</span></div>
+        <div class="eq-band-vis" id="eq-mid" style="--h:60%"><span>Mid</span></div>
+        <div class="eq-band-vis" id="eq-hiMid" style="--h:50%"><span>Hi Mid</span></div>
+        <div class="eq-band-vis" id="eq-pres" style="--h:45%"><span>Presence</span></div>
+        <div class="eq-band-vis" id="eq-treble" style="--h:35%"><span>Treble</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DOWNLOAD -->
+<section class="download" id="download">
+  <div class="section-inner">
+    <p class="section-eyebrow">Loslegen</p>
+    <h2 class="section-heading">Pulsewave herunterladen</h2>
+    <p class="download-sub">Kostenlos für immer. Für Windows und Linux verfügbar.</p>
+    <div class="download-cards">
+      <div class="dl-card">
+        <div class="dl-icon">
+          <svg viewBox="0 0 48 48" fill="none" width="40" height="40"><rect x="6" y="6" width="17" height="17" rx="2" fill="#FFD600"/><rect x="25" y="6" width="17" height="17" rx="2" fill="#FFD600" opacity=".6"/><rect x="6" y="25" width="17" height="17" rx="2" fill="#FFD600" opacity=".6"/><rect x="25" y="25" width="17" height="17" rx="2" fill="#FFD600" opacity=".3"/></svg>
+        </div>
+        <h3>Windows</h3>
+        <p>Windows 10 / 11<br/>x64 · ZIP-Paket</p>
+        <a href="/releases/Pulsewave-1.0.0-win-x64.zip" class="dl-btn" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download für Windows
+        </a>
+        <span class="dl-ver">v1.0.0 · 120 MB · ZIP entpacken + Pulsewave.exe starten</span>
+      </div>
+      <div class="dl-card">
+        <div class="dl-icon">
+          <svg viewBox="0 0 48 48" fill="none" width="40" height="40"><circle cx="24" cy="24" r="18" stroke="#FFD600" stroke-width="2.5"/><path d="M24 14 C18 14 14 18.5 14 24 C14 29.5 18 34 24 34 C30 34 34 29.5 34 24" stroke="#FFD600" stroke-width="2.5" stroke-linecap="round"/><circle cx="24" cy="24" r="4" fill="#FFD600" opacity=".5"/></svg>
+        </div>
+        <h3>Linux</h3>
+        <p>Ubuntu 20.04+ / Debian<br/>x64 · AppImage</p>
+        <a class="dl-btn" style="background:#1e1e1e;color:#666;cursor:not-allowed">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Demnächst verfügbar
+        </a>
+        <span class="dl-ver">Linux AppImage · coming soon</span>
+      </div>
+    </div>
+    <div class="setup-steps">
+      <h3>Schnellstart</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-text"><strong>Account erstellen</strong> — Klick oben auf "Account erstellen" — E-Mail, Username, Passwort</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text"><strong>ZIP herunterladen &amp; entpacken</strong> — einfach auf den Desktop oder einen beliebigen Ordner</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text"><strong>Pulsewave.exe starten</strong> — Doppelklick, kein Installer nötig</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-text"><strong>Einloggen &amp; Musik genießen</strong> — Mit deinem Account einloggen und loslegen 🎵</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <svg width="20" height="20" viewBox="0 0 48 48" fill="none"><path d="M14 34 L14 18 L28 14 L28 26" stroke="#FFD600" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="11" cy="34" r="4" fill="#FFD600"/><circle cx="25" cy="26" r="4" fill="#FFD600"/></svg>
+      <span>Pulsewave</span>
+    </div>
+    <p class="footer-copy">© 2025 Pulsewave · Kostenlos &amp; Open Source</p>
+    <div id="nav-user" style="display:none;align-items:center;gap:10px">
+      <span id="nav-username" style="font-size:13px;color:#888"></span>
+      <button onclick="logout()" style="background:rgba(255,255,255,.07);border:1px solid #333;color:#888;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Logout</button>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const API = window.location.origin; // same server
+
+// ── State ─────────────────────────────────────────────────────────────────
+let currentUser = null;
+
+// ── On load ───────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  const token = localStorage.getItem('pw_token');
+  if (token) {
+    try {
+      const r = await apiFetch('/api/me');
+      if (r.user) setLoggedIn(r.user);
+    } catch { localStorage.removeItem('pw_token'); }
+  }
+
+  // EQ preset animation
+  const presets = {
+    'Flat':       [40,40,40,40,40,40,40],
+    'Bass Boost': [40,75,60,40,35,35,30],
+    'Vocal':      [30,30,40,70,75,65,40],
+    'Rock':       [65,60,40,35,40,60,65],
+    'Electronic': [75,65,40,30,40,65,75],
+    'Classical':  [40,40,40,40,40,55,60],
+  };
+  const ids = ['eq-sub','eq-bass','eq-loMid','eq-mid','eq-hiMid','eq-pres','eq-treble'];
+  document.querySelectorAll('.eq-preset-tag').forEach(tag => {
+    tag.addEventListener('click', () => {
+      document.querySelectorAll('.eq-preset-tag').forEach(t => t.classList.remove('active'));
+      tag.classList.add('active');
+      const v = presets[tag.textContent] || presets['Flat'];
+      ids.forEach((id,i) => { const el = document.getElementById(id); if(el) el.style.setProperty('--h', v[i]+'%'); });
+    });
+  });
+});
+
+// ── API helper ────────────────────────────────────────────────────────────
+async function apiFetch(url, options = {}) {
+  const token = localStorage.getItem('pw_token');
+  const res = await fetch(API + url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: 'Bearer ' + token } : {}),
+      ...options.headers,
+    }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+// ── Auth modal ─────────────────────────────────────────────────────────────
+function openAuth(tab = 'login') {
+  document.getElementById('auth-overlay').style.display = 'flex';
+  switchTab(tab);
+  document.body.style.overflow = 'hidden';
+}
+function closeAuth() {
+  document.getElementById('auth-overlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+function switchTab(tab) {
+  document.getElementById('form-login').style.display    = tab === 'login' ? 'flex' : 'none';
+  document.getElementById('form-register').style.display = tab === 'register' ? 'flex' : 'none';
+  document.getElementById('tab-login').classList.toggle('active', tab === 'login');
+  document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+  document.getElementById('l-err').textContent = '';
+  document.getElementById('r-err').textContent = '';
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────
+async function doLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('l-btn');
+  const err = document.getElementById('l-err');
+  err.textContent = '';
+  btn.disabled = true; btn.querySelector('span').textContent = 'Anmelden…';
+  try {
+    const data = await apiFetch('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: document.getElementById('l-email').value.trim(), password: document.getElementById('l-pass').value })
+    });
+    localStorage.setItem('pw_token', data.token);
+    setLoggedIn(data.user);
+    closeAuth();
+    showToast('Willkommen zurück, ' + data.user.username + '! 🎵');
+  } catch(ex) { err.textContent = ex.message; }
+  finally { btn.disabled = false; btn.querySelector('span').textContent = 'Anmelden'; }
+}
+
+// ── Register ──────────────────────────────────────────────────────────────
+async function doRegister(e) {
+  e.preventDefault();
+  const btn = document.getElementById('r-btn');
+  const err = document.getElementById('r-err');
+  err.textContent = '';
+  const pass  = document.getElementById('r-pass').value;
+  const pass2 = document.getElementById('r-pass2').value;
+  if (pass !== pass2) { err.textContent = 'Passwörter stimmen nicht überein'; return; }
+  btn.disabled = true; btn.querySelector('span').textContent = 'Account erstellen…';
+  try {
+    const data = await apiFetch('/api/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email:    document.getElementById('r-email').value.trim(),
+        username: document.getElementById('r-user').value.trim(),
+        password: pass
+      })
+    });
+    localStorage.setItem('pw_token', data.token);
+    setLoggedIn(data.user);
+    closeAuth();
+    showToast('Account erstellt! Willkommen, ' + data.user.username + '! 🎉');
+  } catch(ex) { err.textContent = ex.message; }
+  finally { btn.disabled = false; btn.querySelector('span').textContent = 'Account erstellen'; }
+}
+
+// ── Logged-in state ───────────────────────────────────────────────────────
+function setLoggedIn(user) {
+  currentUser = user;
+  const navCta = document.querySelector('.nav-cta');
+  navCta.textContent = user.username;
+  navCta.onclick = (e) => { e.preventDefault(); showToast('Eingeloggt als ' + user.username); };
+  const navUser = document.getElementById('nav-user');
+  navUser.style.display = 'flex';
+  document.getElementById('nav-username').textContent = user.email;
+}
+
+function logout() {
+  localStorage.removeItem('pw_token');
+  currentUser = null;
+  const navCta = document.querySelector('.nav-cta');
+  navCta.textContent = 'Sign In';
+  navCta.onclick = (e) => { e.preventDefault(); openAuth('login'); };
+  document.getElementById('nav-user').style.display = 'none';
+  showToast('Erfolgreich ausgeloggt');
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.style.display = 'none', 3000);
+}
+
+function togglePw(id, btn) {
+  const input = document.getElementById(id);
+  input.type = input.type === 'password' ? 'text' : 'password';
+  btn.style.opacity = input.type === 'text' ? '1' : '0.5';
+}
+
+function checkUsername(input) {
+  const hint = document.getElementById('r-user-hint');
+  const val = input.value;
+  if (!val) { hint.textContent = ''; return; }
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(val)) {
+    hint.textContent = '3–20 Zeichen, nur Buchstaben, Zahlen, _'; hint.style.color = '#ff5555';
+  } else { hint.textContent = '✓ Gut'; hint.style.color = '#55ff55'; }
+}
+
+function checkPwStrength(input) {
+  const val = input.value;
+  const bar  = document.getElementById('pw-bar');
+  const hint = document.getElementById('pw-hint');
+  let score = 0;
+  if (val.length >= 6)  score++;
+  if (val.length >= 10) score++;
+  if (/[A-Z]/.test(val)) score++;
+  if (/[0-9]/.test(val)) score++;
+  if (/[^a-zA-Z0-9]/.test(val)) score++;
+  const colors = ['#ff3333','#ff7700','#ffaa00','#aaff00','#00ff88'];
+  const labels = ['Sehr schwach','Schwach','Mittel','Stark','Sehr stark'];
+  bar.style.width = (score * 20) + '%';
+  bar.style.background = colors[Math.max(0,score-1)];
+  hint.textContent = val.length > 0 ? labels[Math.max(0,score-1)] : '';
+  hint.style.color = colors[Math.max(0,score-1)];
+}
+</script>
+</body>
+</html>

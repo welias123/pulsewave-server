@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulsewave Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #080808; color: #fff; min-height: 100vh; }
+  .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .login-card { background: #111; border: 1px solid #222; border-radius: 20px; padding: 40px; width: 360px; }
+  .logo { text-align: center; margin-bottom: 28px; }
+  .logo h1 { font-size: 22px; color: #FFD600; }
+  .logo p  { color: #555; font-size: 13px; margin-top: 4px; }
+  input { width: 100%; background: #0d0d0d; border: 1px solid #222; border-radius: 10px; padding: 12px 14px; color: #fff; font-size: 14px; margin-bottom: 12px; outline: none; }
+  input:focus { border-color: #FFD600; }
+  button { width: 100%; background: #FFD600; color: #000; border: none; border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 700; cursor: pointer; }
+  button:hover { background: #ffe033; }
+  .err { color: #ff4d4d; font-size: 13px; text-align: center; margin-top: 10px; }
+
+  /* Dashboard */
+  .dash { display: none; max-width: 900px; margin: 0 auto; padding: 40px 24px; }
+  .dash-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 36px; }
+  .dash-header h1 { color: #FFD600; font-size: 22px; }
+  .btn-sm { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 8px 16px; color: #ccc; font-size: 13px; cursor: pointer; }
+  .btn-sm:hover { background: #222; }
+  .btn-danger { background: #2a0808; border-color: #5a1010; color: #ff6b6b; }
+  .btn-danger:hover { background: #3a0a0a; }
+  .btn-gold { background: #FFD600; color: #000; border-color: #FFD600; font-weight: 700; }
+  .btn-gold:hover { background: #ffe033; }
+
+  .panel { background: #0f0f0f; border: 1px solid #1e1e1e; border-radius: 16px; padding: 28px; margin-bottom: 24px; }
+  .panel h2 { font-size: 16px; color: #fff; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+  .panel h2 span { font-size: 20px; }
+
+  .gen-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .gen-row input { margin: 0; flex: 1; min-width: 160px; }
+  .gen-row button { width: auto; flex: 0 0 auto; padding: 12px 20px; border-radius: 10px; font-size: 14px; }
+
+  .code-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-height: 320px; overflow-y: auto; }
+  .code-row { display: flex; align-items: center; gap: 10px; background: #141414; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .code-val { font-family: monospace; font-size: 14px; color: #FFD600; flex: 1; user-select: all; }
+  .code-used { color: #555; text-decoration: line-through; }
+  .code-meta { color: #555; font-size: 12px; }
+  .code-badge-used { background: #1a0a0a; color: #ff6b6b; border-radius: 6px; padding: 2px 8px; font-size: 11px; }
+  .code-badge-free { background: #0a1a0a; color: #4ade80; border-radius: 6px; padding: 2px 8px; font-size: 11px; }
+
+  .user-list { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; }
+  .user-row { display: flex; align-items: center; gap: 10px; background: #141414; border-radius: 10px; padding: 10px 14px; }
+  .user-name { font-weight: 700; font-size: 14px; flex: 1; }
+  .user-email { color: #555; font-size: 12px; }
+  .premium-badge { background: linear-gradient(135deg,#FFD600,#FF9900); color: #000; border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .free-badge { background: #1a1a1a; color: #555; border-radius: 6px; padding: 2px 8px; font-size: 11px; }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1a1a; border: 1px solid #FFD600; color: #FFD600; padding: 10px 24px; border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 999; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+
+  .set-prem-row { display: flex; gap: 10px; }
+  .set-prem-row input { margin: 0; }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div class="login-wrap" id="login-wrap">
+  <div class="login-card">
+    <div class="logo">
+      <h1>🎵 Pulsewave Admin</h1>
+      <p>Nur für Administratoren</p>
+    </div>
+    <input type="password" id="pw-input" placeholder="Admin-Passwort" autocomplete="off" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">Einloggen</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div class="dash" id="dashboard">
+  <div class="dash-header">
+    <h1>🎵 Pulsewave Admin</h1>
+    <button class="btn-sm" onclick="logout()">Ausloggen</button>
+  </div>
+
+  <!-- Generate codes -->
+  <div class="panel">
+    <h2><span>🔑</span> Aktivierungscodes generieren</h2>
+    <div class="gen-row">
+      <input type="number" id="gen-count" value="1" min="1" max="50" placeholder="Anzahl">
+      <input type="text" id="gen-note" placeholder="Notiz (z.B. Benutzername oder Datum)">
+      <button class="btn-gold" onclick="generateCodes()">Codes generieren</button>
+    </div>
+    <div id="new-codes-box" style="display:none;margin-top:16px;">
+      <div style="color:#4ade80;font-size:13px;font-weight:600;margin-bottom:8px;">✅ Neue Codes (klicken zum Kopieren):</div>
+      <div id="new-codes-list" class="code-list"></div>
+    </div>
+  </div>
+
+  <!-- All codes -->
+  <div class="panel">
+    <h2><span>📋</span> Alle Codes <button class="btn-sm" style="margin-left:auto" onclick="loadCodes()">Aktualisieren</button></h2>
+    <div id="codes-list" class="code-list"><div style="color:#555;font-size:13px">Lädt…</div></div>
+  </div>
+
+  <!-- Set premium manually -->
+  <div class="panel">
+    <h2><span>⭐</span> Premium manuell setzen</h2>
+    <div class="set-prem-row">
+      <input type="text" id="prem-username" placeholder="Benutzername" autocomplete="off">
+      <button class="btn-gold" onclick="setPremium(true)" style="width:auto;padding:12px 20px;border-radius:10px;font-size:14px;">Premium an</button>
+      <button class="btn-danger btn-sm" style="padding:12px 20px" onclick="setPremium(false)">Premium aus</button>
+    </div>
+  </div>
+
+  <!-- Users -->
+  <div class="panel">
+    <h2><span>👥</span> Benutzer <button class="btn-sm" style="margin-left:auto" onclick="loadUsers()">Aktualisieren</button></h2>
+    <div id="users-list" class="user-list"><div style="color:#555;font-size:13px">Lädt…</div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let _pw = '';
+
+function getBase() { return window.location.origin; }
+
+function showToast(msg, color) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.color  = color || '#FFD600';
+  t.style.borderColor = color || '#FFD600';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+async function doLogin() {
+  const pw = document.getElementById('pw-input').value.trim();
+  if (!pw) return;
+  try {
+    const r = await fetch(getBase() + '/api/admin/codes', { headers: { 'x-admin-password': pw } });
+    if (!r.ok) { document.getElementById('login-err').textContent = 'Falsches Passwort'; return; }
+    _pw = pw;
+    document.getElementById('login-wrap').style.display = 'none';
+    document.getElementById('dashboard').style.display  = 'block';
+    loadCodes(); loadUsers();
+  } catch { document.getElementById('login-err').textContent = 'Server nicht erreichbar'; }
+}
+
+function logout() { _pw = ''; location.reload(); }
+
+async function generateCodes() {
+  const count = parseInt(document.getElementById('gen-count').value) || 1;
+  const note  = document.getElementById('gen-note').value.trim();
+  try {
+    const r = await fetch(getBase() + '/api/admin/generate-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': _pw },
+      body: JSON.stringify({ count, note })
+    });
+    const d = await r.json();
+    if (!d.ok) return showToast('Fehler: ' + d.error, '#ff4d4d');
+    // Show new codes
+    const box  = document.getElementById('new-codes-box');
+    const list = document.getElementById('new-codes-list');
+    box.style.display = 'block';
+    list.innerHTML = d.codes.map(c => `
+      <div class="code-row" onclick="copyCode('${c.code}')" style="cursor:pointer" title="Klicken zum Kopieren">
+        <span class="code-val">${c.code}</span>
+        <span class="code-meta">${c.note ? '— ' + c.note : ''}</span>
+        <span class="code-badge-free">NEU</span>
+      </div>`).join('');
+    showToast(`✅ ${count} Code(s) generiert!`, '#4ade80');
+    loadCodes();
+  } catch(e) { showToast('Fehler: ' + e.message, '#ff4d4d'); }
+}
+
+function copyCode(code) {
+  navigator.clipboard.writeText(code).then(() => showToast('📋 ' + code + ' kopiert!'));
+}
+
+async function loadCodes() {
+  try {
+    const r = await fetch(getBase() + '/api/admin/codes', { headers: { 'x-admin-password': _pw } });
+    const d = await r.json();
+    const el = document.getElementById('codes-list');
+    if (!d.codes?.length) { el.innerHTML = '<div style="color:#555;font-size:13px">Noch keine Codes vorhanden</div>'; return; }
+    const sorted = [...d.codes].reverse();
+    el.innerHTML = sorted.map(c => `
+      <div class="code-row">
+        <span class="code-val ${c.usedBy ? 'code-used' : ''}">${c.code}</span>
+        <span class="code-meta">${c.note ? c.note + ' · ' : ''}${new Date(c.createdAt).toLocaleDateString('de')}</span>
+        ${c.usedBy ? `<span class="code-badge-used">von ${c.username||c.usedBy}</span>` : '<span class="code-badge-free">frei</span>'}
+        ${!c.usedBy ? `<button class="btn-sm btn-danger" onclick="deleteCode('${c.code}')" style="padding:4px 10px;font-size:11px">✕</button>` : ''}
+      </div>`).join('');
+  } catch(e) { document.getElementById('codes-list').innerHTML = '<div style="color:#ff4d4d">Fehler beim Laden</div>'; }
+}
+
+async function deleteCode(code) {
+  if (!confirm('Code ' + code + ' löschen?')) return;
+  await fetch(getBase() + '/api/admin/codes/' + code, { method: 'DELETE', headers: { 'x-admin-password': _pw } });
+  showToast('Code gelöscht', '#ff6b6b');
+  loadCodes();
+}
+
+async function setPremium(value) {
+  const username = document.getElementById('prem-username').value.trim();
+  if (!username) return showToast('Benutzernamen eingeben', '#ff4d4d');
+  try {
+    const r = await fetch(getBase() + '/api/admin/set-premium', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': _pw },
+      body: JSON.stringify({ username, isPremium: value })
+    });
+    const d = await r.json();
+    if (!d.ok) return showToast('Fehler: ' + (d.error||'?'), '#ff4d4d');
+    showToast(value ? `⭐ ${username} ist jetzt Premium!` : `${username} Premium entfernt`, value ? '#FFD600' : '#ff6b6b');
+    loadUsers();
+  } catch(e) { showToast('Fehler: ' + e.message, '#ff4d4d'); }
+}
+
+async function loadUsers() {
+  try {
+    const r = await fetch(getBase() + '/api/admin/users', { headers: { 'x-admin-password': _pw } });
+    const d = await r.json();
+    const el = document.getElementById('users-list');
+    if (!d.users?.length) { el.innerHTML = '<div style="color:#555;font-size:13px">Noch keine Benutzer</div>'; return; }
+    el.innerHTML = d.users.map(u => `
+      <div class="user-row">
+        <div>
+          <div class="user-name">${u.username}</div>
+          <div class="user-email">${u.email||'—'}</div>
+        </div>
+        ${u.is_premium ? '<span class="premium-badge">⭐ PREMIUM</span>' : '<span class="free-badge">Free</span>'}
+      </div>`).join('');
+  } catch(e) { document.getElementById('users-list').innerHTML = '<div style="color:#ff4d4d">Fehler beim Laden</div>'; }
+}
+
+document.getElementById('pw-input').focus();
+</script>
+</body>
+</html>
