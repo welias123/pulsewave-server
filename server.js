@@ -1,10 +1,64 @@
-const express = require('express');
-const bcrypt  = require('bcryptjs');
-const jwt     = require('jsonwebtoken');
-const cors    = require('cors');
-const fs      = require('fs');
-const path    = require('path');
-const crypto  = require('crypto');
+require('dotenv').config();
+const express    = require('express');
+const bcrypt     = require('bcryptjs');
+const jwt        = require('jsonwebtoken');
+const cors       = require('cors');
+const fs         = require('fs');
+const path       = require('path');
+const crypto     = require('crypto');
+const nodemailer = require('nodemailer');
+
+// ── E-Mail Transporter ────────────────────────────────────────────────────────
+let mailer = null;
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+  mailer = nodemailer.createTransport({
+    service: process.env.EMAIL_SERVICE || 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  });
+  mailer.verify().then(() => console.log('📧 E-Mail bereit')).catch(() => console.log('⚠️  E-Mail-Fehler — Zugangsdaten prüfen'));
+} else {
+  console.log('⚠️  E-Mail deaktiviert (EMAIL_USER + EMAIL_PASS fehlen in .env)');
+}
+
+// ── Pending Verifications (in-memory, 10 min TTL) ─────────────────────────────
+// key: email → { code, expiresAt, username, passwordHash }
+const pendingVerifications = new Map();
+
+function generateCode() {
+  return String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+}
+
+async function sendVerificationEmail(email, username, code) {
+  if (!mailer) {
+    // Dev fallback: log the code to console
+    console.log(`\n📧 [DEV] Verifizierungscode für ${email}: ${code}\n`);
+    return;
+  }
+  await mailer.sendMail({
+    from: `"Pulsewave" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: 'Dein Pulsewave Verifizierungscode',
+    html: `
+      <div style="font-family:-apple-system,sans-serif;max-width:480px;margin:0 auto;background:#080808;color:#fff;padding:40px;border-radius:16px">
+        <div style="text-align:center;margin-bottom:32px">
+          <span style="font-size:40px">🎵</span>
+          <h1 style="color:#FFD600;margin:12px 0 4px;font-size:24px">Pulsewave</h1>
+          <p style="color:#555;font-size:13px;margin:0">Deine Musik, dein Weg.</p>
+        </div>
+        <h2 style="font-size:18px;margin-bottom:8px">Hallo ${username} 👋</h2>
+        <p style="color:#999;font-size:14px;margin-bottom:28px">
+          Gib diesen Code in der App ein, um deine E-Mail-Adresse zu bestätigen:
+        </p>
+        <div style="background:#1a1a00;border:2px solid #FFD600;border-radius:12px;text-align:center;padding:24px;margin-bottom:28px">
+          <span style="font-size:42px;font-weight:900;letter-spacing:10px;color:#FFD600">${code}</span>
+        </div>
+        <p style="color:#555;font-size:12px;text-align:center">
+          Der Code ist <strong style="color:#888">10 Minuten</strong> gültig.<br/>
+          Falls du kein Konto erstellt hast, ignoriere diese E-Mail.
+        </p>
+      </div>`
+  });
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3333;
@@ -131,21 +185,72 @@ function makeToken(user) {
   );
 }
 
-// ── POST /api/register ────────────────────────────────────────────────────
+// ── POST /api/register — Step 1: send verification code ──────────────────────
 app.post('/api/register', async (req,res) => {
   const { email, username, password } = req.body;
   if (!email||!username||!password) return res.status(400).json({ error:'E-Mail, Benutzername und Passwort erforderlich' });
-  if (!isValidEmail(email))     return res.status(400).json({ error:'Ungültige E-Mail-Adresse' });
-  if (!isValidUsername(username)) return res.status(400).json({ error:'Benutzername: 3–20 Zeichen, nur Buchstaben/Zahlen/_' });
-  if (password.length < 6)      return res.status(400).json({ error:'Passwort muss mindestens 6 Zeichen haben' });
+  if (!isValidEmail(email))          return res.status(400).json({ error:'Ungültige E-Mail-Adresse' });
+  if (!isValidUsername(username))    return res.status(400).json({ error:'Benutzername: 3–20 Zeichen, nur Buchstaben/Zahlen/_' });
+  if (password.length < 6)           return res.status(400).json({ error:'Passwort muss mindestens 6 Zeichen haben' });
   try {
-    if (await findByEmail(email))    return res.status(409).json({ error:'E-Mail bereits registriert' });
+    if (await findByEmail(email))       return res.status(409).json({ error:'E-Mail bereits registriert' });
     if (await findByUsername(username)) return res.status(409).json({ error:'Benutzername bereits vergeben' });
+
     const hash = await bcrypt.hash(password, 12);
-    const user = await insertUser(email, username, hash);
+    const code = generateCode();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    // Store pending registration
+    pendingVerifications.set(email.toLowerCase(), { code, expiresAt, username, passwordHash: hash });
+
+    // Send code via e-mail
+    await sendVerificationEmail(email, username, code);
+
+    res.status(200).json({ needsVerification: true, message: 'Verifizierungscode wurde an deine E-Mail gesendet.' });
+  } catch(e) { console.error(e); res.status(500).json({ error:'Server-Fehler: ' + e.message }); }
+});
+
+// ── POST /api/verify-email — Step 2: confirm code + create account ────────────
+app.post('/api/verify-email', async (req,res) => {
+  const { email, code } = req.body;
+  if (!email||!code) return res.status(400).json({ error:'E-Mail und Code erforderlich' });
+
+  const pending = pendingVerifications.get(email.toLowerCase());
+  if (!pending) return res.status(400).json({ error:'Kein ausstehender Code für diese E-Mail. Bitte erneut registrieren.' });
+  if (Date.now() > pending.expiresAt) {
+    pendingVerifications.delete(email.toLowerCase());
+    return res.status(400).json({ error:'Code abgelaufen. Bitte erneut registrieren.' });
+  }
+  if (String(code).trim() !== String(pending.code)) {
+    return res.status(400).json({ error:'Falscher Code. Bitte nochmals prüfen.' });
+  }
+
+  try {
+    // Double-check no duplicate appeared while waiting
+    if (await findByEmail(email))          return res.status(409).json({ error:'E-Mail bereits registriert' });
+    if (await findByUsername(pending.username)) return res.status(409).json({ error:'Benutzername bereits vergeben' });
+
+    const user = await insertUser(email, pending.username, pending.passwordHash);
+    pendingVerifications.delete(email.toLowerCase());
+
     const token = makeToken(user);
     res.status(201).json({ token, user:{ id:user.id, username:user.username, email:user.email, is_premium:false } });
   } catch(e) { console.error(e); res.status(500).json({ error:'Server-Fehler' }); }
+});
+
+// ── POST /api/resend-code ─────────────────────────────────────────────────────
+app.post('/api/resend-code', async (req,res) => {
+  const { email } = req.body;
+  const pending = pendingVerifications.get(email?.toLowerCase());
+  if (!pending) return res.status(400).json({ error:'Keine ausstehende Registrierung für diese E-Mail' });
+
+  const code = generateCode();
+  pending.code      = code;
+  pending.expiresAt = Date.now() + 10 * 60 * 1000;
+  try {
+    await sendVerificationEmail(email, pending.username, code);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error:'E-Mail konnte nicht gesendet werden' }); }
 });
 
 // ── POST /api/login ────────────────────────────────────────────────────────
@@ -272,8 +377,62 @@ app.delete('/api/account', requireAuth, async (req,res) => {
   res.json({ ok:true });
 });
 
+// ── GET /api/search — YouTube search via yt-dlp (with cache) ─────────────
+const searchCache = new Map(); // simple in-memory cache, TTL 10 min
+const CACHE_TTL = 10 * 60 * 1000;
+
+app.get('/api/search', async (req,res) => {
+  const q = req.query.q;
+  if (!q) return res.status(400).json({ error:'Query fehlt' });
+
+  // Serve from cache if fresh
+  const cacheKey = q.toLowerCase().trim();
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return res.json({ results: cached.results, cached: true });
+  }
+
+  const ytdlp = require('path').join(__dirname,'..','pulsewave','bin','yt-dlp.exe');
+  const bins = [
+    ytdlp,
+    require('path').join(__dirname,'bin','yt-dlp.exe'),
+    'yt-dlp'
+  ];
+  const { exec } = require('child_process');
+  const bin = bins.find(b => { try { return require('fs').existsSync(b); } catch { return false; } }) || 'yt-dlp';
+  const safe = q.replace(/"/g,'').replace(/[`$]/g,'');
+  const cmd = `"${bin}" "ytsearch8:${safe}" -j --flat-playlist --no-warnings`;
+
+  exec(cmd, { maxBuffer: 10*1024*1024, timeout: 60000 }, (err, out) => {
+    if (err) return res.status(500).json({ error: err.message, results: [] });
+    try {
+      const results = out.trim().split('\n').filter(Boolean).map(l => {
+        const d = JSON.parse(l);
+        const dur = d.duration || 0;
+        const m = Math.floor(dur/60);
+        const s = String(Math.floor(dur%60)).padStart(2,'0');
+        return {
+          videoId: d.id,
+          title: d.title || 'Unknown',
+          artist: d.uploader || d.channel || 'Unknown',
+          thumbnail: d.thumbnail || `https://img.youtube.com/vi/${d.id}/hqdefault.jpg`,
+          duration: `${m}:${s}`,
+          durationSec: dur
+        };
+      });
+      // Store in cache
+      searchCache.set(cacheKey, { results, ts: Date.now() });
+      res.json({ results });
+    } catch(e) { res.status(500).json({ error: e.message, results: [] }); }
+  });
+});
+
 // ── SPA fallback ───────────────────────────────────────────────────────────
-app.get('*', (req,res) => res.sendFile(path.join(__dirname,'public','index.html')));
+app.get('*', (req,res) => {
+  const f = require('path').join(__dirname,'public','index.html');
+  if (require('fs').existsSync(f)) res.sendFile(f);
+  else res.status(404).json({ error:'Not found' });
+});
 
 app.listen(PORT, () => {
   console.log(`\n🎵 Pulsewave server on http://localhost:${PORT}`);
