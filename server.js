@@ -408,6 +408,25 @@ app.get('/api/me', requireAuth, async (req,res) => {
   } catch { res.json({ user:{ id:req.user.userId, username:req.user.username, email:req.user.email, is_premium:false } }); }
 });
 
+// ── POST /api/paypal-activate — called after PayPal subscription approved ────
+// The PayPal JS SDK calls onApprove with a subscriptionID after the user pays.
+// We store it and activate premium immediately.
+app.post('/api/paypal-activate', requireAuth, async (req, res) => {
+  const { subscriptionId } = req.body;
+  if (!subscriptionId) return res.status(400).json({ error: 'subscriptionId fehlt' });
+  try {
+    await updateUser(req.user.userId, {
+      is_premium: true,
+      paypal_subscr_id: subscriptionId,
+      premium_expires_at: null  // PayPal manages renewals
+    });
+    console.log(`⭐ [PayPal] ${req.user.username} aktivierte Premium — sub: ${subscriptionId}`);
+    res.json({ ok: true, message: 'Premium ist jetzt aktiv! Viel Spaß 🎵' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/crypto-address — get user's unique payment address ───────────
 app.get('/api/crypto-address', requireAuth, async (req, res) => {
   const address = getUserCryptoAddress(req.user.userId);
