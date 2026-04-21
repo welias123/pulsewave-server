@@ -437,4 +437,54 @@ app.get('*', (req,res) => {
 app.listen(PORT, () => {
   console.log(`\n🎵 Pulsewave server on http://localhost:${PORT}`);
   console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · Stripe: ${stripe?'enabled':'disabled'}`);
+
+  // Pre-warm search cache for all radio station queries so they respond instantly
+  const PREWARM = [
+    'lofi hip hop chill beats',
+    'top chart hits music 2024',
+    'hip hop rap songs',
+    'pop music hits',
+    'electronic dance music',
+    'rock music classic hits',
+    'workout motivation gym music',
+    'kpop songs hits'
+  ];
+  const { exec } = require('child_process');
+  const path = require('path');
+  const fs = require('fs');
+  const bins = [
+    path.join(__dirname,'..','pulsewave','bin','yt-dlp.exe'),
+    path.join(__dirname,'bin','yt-dlp.exe'),
+    'yt-dlp'
+  ];
+  const bin = bins.find(b => { try { return fs.existsSync(b); } catch { return false; } }) || 'yt-dlp';
+
+  let idx = 0;
+  const warmNext = () => {
+    if (idx >= PREWARM.length) { console.log('✅ Cache pre-warm complete'); return; }
+    const q = PREWARM[idx++];
+    const key = q.toLowerCase().trim();
+    if (searchCache.has(key)) { warmNext(); return; }
+    const safe = q.replace(/"/g,'').replace(/[`$]/g,'');
+    exec(`"${bin}" "ytsearch8:${safe}" -j --flat-playlist --no-warnings`,
+      { maxBuffer: 10*1024*1024, timeout: 60000 },
+      (err, out) => {
+        if (!err) {
+          try {
+            const results = out.trim().split('\n').filter(Boolean).map(l => {
+              const d = JSON.parse(l);
+              const dur = d.duration || 0;
+              return { videoId:d.id, title:d.title||'Unknown', artist:d.uploader||d.channel||'Unknown',
+                thumbnail:d.thumbnail||`https://img.youtube.com/vi/${d.id}/hqdefault.jpg`,
+                duration:`${Math.floor(dur/60)}:${String(Math.floor(dur%60)).padStart(2,'0')}`, durationSec:dur };
+            });
+            searchCache.set(key, { results, ts: Date.now() });
+            console.log(`  ♻️  cached: ${q} (${results.length} tracks)`);
+          } catch(e) {}
+        }
+        warmNext(); // run sequentially to avoid overloading yt-dlp
+      }
+    );
+  };
+  setTimeout(warmNext, 3000); // start 3s after server is ready
 });
