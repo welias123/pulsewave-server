@@ -408,6 +408,29 @@ app.get('/api/me', requireAuth, async (req,res) => {
   } catch { res.json({ user:{ id:req.user.userId, username:req.user.username, email:req.user.email, is_premium:false } }); }
 });
 
+// ── POST /api/paypal-activate-guest — for users without an account ────────────
+// They paid via PayPal but have no account yet.
+// We generate an activation code they can redeem after registering.
+app.post('/api/paypal-activate-guest', async (req, res) => {
+  const { subscriptionId } = req.body;
+  if (!subscriptionId) return res.status(400).json({ error: 'subscriptionId fehlt' });
+
+  // Generate a code and store it linked to this subscription
+  const code  = makeActivationCode();
+  const codes = loadCodes();
+  codes.push({
+    code,
+    createdAt:      new Date().toISOString(),
+    usedBy:         null,
+    note:           `PayPal guest sub:${subscriptionId}`,
+    paypalSubscrId: subscriptionId
+  });
+  saveCodes(codes);
+
+  console.log(`🎁 [PayPal Guest] Code ${code} generated for sub ${subscriptionId}`);
+  res.json({ ok: true, code, message: 'Code generiert — nach Account-Erstellung einlösen!' });
+});
+
 // ── POST /api/paypal-activate — called after PayPal subscription approved ────
 // The PayPal JS SDK calls onApprove with a subscriptionID after the user pays.
 // We store it and activate premium immediately.
