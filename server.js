@@ -650,7 +650,7 @@ app.get('*', (req,res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🎵 Pulsewave server on http://localhost:${PORT}`);
-  console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · PayPal: ${PAYPAL_LINK||'(not set)'}`);
+  console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · Crypto: USDC on Polygon`);
   console.log(`\n🔑 Admin-Passwort: ${ADMIN_PASSWORD}\n   Admin-Panel: http://localhost:${PORT}/admin\n`);
 
   // Start crypto payment checker — runs every 3 minutes
