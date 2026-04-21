@@ -75,23 +75,23 @@ const USDC_CONTRACT  = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC on 
 const USDC_DECIMALS  = 6;
 const BILLING_DAYS   = 31; // premium lasts this many days per payment
 
-let _hdWallet = null;
-function getHDWallet() {
-  if (_hdWallet) return _hdWallet;
+let _hdBase = null;
+function getHDBase() {
+  if (_hdBase) return _hdBase;
   const phrase = process.env.CRYPTO_MNEMONIC;
   if (!phrase) { console.warn('⚠️  CRYPTO_MNEMONIC not set — crypto payments disabled'); return null; }
   const { ethers } = require('ethers');
-  _hdWallet = ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(phrase));
-  return _hdWallet;
+  // Derive to account level m/44'/60'/0'/0, then use deriveChild(userId)
+  _hdBase = ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(phrase), "m/44'/60'/0'/0");
+  return _hdBase;
 }
+function getHDWallet() { return getHDBase(); } // compat alias for logging
 
 // Derive a unique address for a user (by their numeric ID)
 function getUserCryptoAddress(userId) {
-  const hd = getHDWallet();
-  if (!hd) return null;
-  const { ethers } = require('ethers');
-  const child = hd.derivePath(`m/44'/60'/0'/0/${userId}`);
-  return child.address;
+  const base = getHDBase();
+  if (!base) return null;
+  return base.deriveChild(userId).address;
 }
 
 // Check USDC balance of an address on Polygon via public RPC
@@ -130,9 +130,9 @@ async function getUSDCBalance(address) {
 async function sweepUSDC(userId) {
   try {
     const { ethers } = require('ethers');
-    const hd       = getHDWallet();
-    if (!hd) return;
-    const child    = hd.derivePath(`m/44'/60'/0'/0/${userId}`);
+    const base  = getHDBase();
+    if (!base) return;
+    const child = base.deriveChild(userId);
     const provider = new ethers.JsonRpcProvider(POLYGON_RPC);
     const signer   = child.connect(provider);
     const balance  = await getUSDCBalance(child.address);
