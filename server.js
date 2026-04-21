@@ -63,50 +63,124 @@ async function sendVerificationEmail(email, username, code) {
 const app  = express();
 const PORT = process.env.PORT || 3333;
 
-// ── Payment config ─────────────────────────────────────────────────────────
-const CLIENT_URL        = process.env.CLIENT_URL        || 'https://welias123.github.io/pulsewave-website';
-const PAYPAL_BUTTON_ID  = process.env.PAYPAL_BUTTON_ID  || '';   // hosted_button_id from PayPal
-const PRICE_EUR         = process.env.PRICE_EUR         || '2';  // monthly price shown to users
-// PayPal IPN verification URL (use sandbox for testing)
-const PAYPAL_VERIFY_URL = process.env.PAYPAL_SANDBOX === 'true'
-  ? 'https://ipnpb.sandbox.paypal.com/cgi-bin/webscr'
-  : 'https://ipnpb.paypal.com/cgi-bin/webscr';
+// ── Config ─────────────────────────────────────────────────────────────────
+const CLIENT_URL  = process.env.CLIENT_URL  || 'https://welias123.github.io/pulsewave-website';
+const PRICE_USDC  = parseFloat(process.env.PRICE_USDC || '2');   // monthly price in USDC
 
-// ── PayPal IPN verifier (uses Node built-in https) ─────────────────────────
-function verifyPaypalIPN(body) {
+// ── Crypto payment system (USDC on Polygon) ────────────────────────────────
+// Each user gets a unique wallet address derived from the master HD wallet.
+// Polygon network: fast, gas < $0.001, USDC is always worth $1.
+const POLYGON_RPC    = 'https://polygon-rpc.com';
+const USDC_CONTRACT  = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC on Polygon
+const USDC_DECIMALS  = 6;
+const BILLING_DAYS   = 31; // premium lasts this many days per payment
+
+let _hdWallet = null;
+function getHDWallet() {
+  if (_hdWallet) return _hdWallet;
+  const phrase = process.env.CRYPTO_MNEMONIC;
+  if (!phrase) { console.warn('⚠️  CRYPTO_MNEMONIC not set — crypto payments disabled'); return null; }
+  const { ethers } = require('ethers');
+  _hdWallet = ethers.HDNodeWallet.fromMnemonic(ethers.Mnemonic.fromPhrase(phrase));
+  return _hdWallet;
+}
+
+// Derive a unique address for a user (by their numeric ID)
+function getUserCryptoAddress(userId) {
+  const hd = getHDWallet();
+  if (!hd) return null;
+  const { ethers } = require('ethers');
+  const child = hd.derivePath(`m/44'/60'/0'/0/${userId}`);
+  return child.address;
+}
+
+// Check USDC balance of an address on Polygon via public RPC
+async function getUSDCBalance(address) {
+  const https = require('https');
+  // ERC-20 balanceOf call: selector 0x70a08231 + padded address
+  const { ethers } = require('ethers');
+  const data = '0x70a08231' + address.slice(2).toLowerCase().padStart(64, '0');
+  const body = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'eth_call',
+    params: [{ to: USDC_CONTRACT, data }, 'latest']
+  });
   return new Promise((resolve, reject) => {
-    const payload = 'cmd=_notify-validate&' + body;
-    const https   = require('https');
-    const url     = new URL(PAYPAL_VERIFY_URL);
-    const opts    = {
-      hostname: url.hostname,
-      path:     url.pathname,
-      method:   'POST',
-      headers:  {
-        'Content-Type':   'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(payload),
-        'User-Agent':     'Pulsewave-IPN/1.0'
-      }
-    };
-    const req = https.request(opts, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => resolve(data.trim()));
+    const url = new URL(POLYGON_RPC);
+    const req = https.request({
+      hostname: url.hostname, path: url.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(d).result;
+          if (!result || result === '0x') { resolve(0); return; }
+          resolve(Number(BigInt(result)) / 10 ** USDC_DECIMALS);
+        } catch { resolve(0); }
+      });
     });
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
+    req.on('error', () => resolve(0));
+    req.write(body); req.end();
   });
 }
 
-// ── Find user by PayPal subscription ID ────────────────────────────────────
-async function findByPaypalSubscr(subscrId) {
-  if (pool) {
-    const r = await pool.query('SELECT * FROM users WHERE paypal_subscr_id=$1', [subscrId]);
-    return r.rows[0] || null;
+// Sweep (forward) USDC from a user's derived address to the master wallet
+// (optional — keeps earnings in one place; runs after payment detected)
+async function sweepUSDC(userId) {
+  try {
+    const { ethers } = require('ethers');
+    const hd       = getHDWallet();
+    if (!hd) return;
+    const child    = hd.derivePath(`m/44'/60'/0'/0/${userId}`);
+    const provider = new ethers.JsonRpcProvider(POLYGON_RPC);
+    const signer   = child.connect(provider);
+    const balance  = await getUSDCBalance(child.address);
+    if (balance < 0.01) return;
+    // Transfer USDC to master wallet
+    const usdc   = new ethers.Contract(USDC_CONTRACT,
+      ['function transfer(address to, uint256 amount) returns (bool)'], signer);
+    const amount = ethers.parseUnits(balance.toFixed(6), USDC_DECIMALS);
+    const tx     = await usdc.transfer(hd.address, amount);
+    await tx.wait();
+    console.log(`💸 Swept ${balance} USDC from user ${userId} to master wallet`);
+  } catch(e) {
+    console.warn(`[sweep] User ${userId}: ${e.message}`);
   }
-  return loadDB().users.find(u => u.paypal_subscr_id === subscrId) || null;
 }
+
+// Background payment checker — runs every 3 minutes
+async function checkCryptoPayments() {
+  try {
+    const db    = loadDB();
+    const users = db.users;
+    for (const user of users) {
+      const addr    = getUserCryptoAddress(user.id);
+      if (!addr) break;
+      const balance = await getUSDCBalance(addr);
+      if (balance >= PRICE_USDC) {
+        // Payment detected!
+        const expiresAt = new Date(Date.now() + BILLING_DAYS * 24 * 3600 * 1000).toISOString();
+        await updateUser(user.id, { is_premium: true, premium_expires_at: expiresAt });
+        console.log(`✅ [Crypto] ${user.username} paid ${balance} USDC → Premium until ${expiresAt}`);
+        // Sweep funds to master wallet (background)
+        sweepUSDC(user.id).catch(() => {});
+      }
+    }
+    // Also expire overdue premiums
+    for (const user of users) {
+      if (user.is_premium && user.premium_expires_at) {
+        if (new Date(user.premium_expires_at) < new Date()) {
+          await updateUser(user.id, { is_premium: false });
+          console.log(`❌ [Crypto] Premium expired for ${user.username}`);
+        }
+      }
+    }
+  } catch(e) { console.warn('[checkCryptoPayments]', e.message); }
+}
+
+// ── Find user by PayPal subscription ID (legacy stub) ──────────────────────
+async function findByPaypalSubscr(subscrId) { return null; }
 
 // ── Admin password (auto-generated once, stored in data/.adminpw) ──────────
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (() => {
@@ -221,10 +295,7 @@ async function deleteById(id) {
 
 // ── Middleware ────────────────────────────────────────────────────────────
 app.use(cors({ origin:'*', credentials:true }));
-// Raw body needed for PayPal IPN (must be before express.json())
-app.use('/api/paypal-ipn', express.raw({ type: '*/*' }));
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname,'public')));
 
 // ── Auth middleware ────────────────────────────────────────────────────────
@@ -337,65 +408,34 @@ app.get('/api/me', requireAuth, async (req,res) => {
   } catch { res.json({ user:{ id:req.user.userId, username:req.user.username, email:req.user.email, is_premium:false } }); }
 });
 
-// ── POST /api/paypal-ipn — PayPal Instant Payment Notification ───────────────
-// PayPal calls this automatically on every payment, renewal, cancellation.
-// Custom field format: "pw:USERNAME" (set when creating the subscription)
-app.post('/api/paypal-ipn', async (req, res) => {
-  // Must respond 200 immediately
-  res.status(200).end();
+// ── GET /api/crypto-address — get user's unique payment address ───────────
+app.get('/api/crypto-address', requireAuth, async (req, res) => {
+  const address = getUserCryptoAddress(req.user.userId);
+  if (!address) return res.status(503).json({ error: 'Crypto-Zahlungen nicht konfiguriert' });
+  const user = await findById(req.user.userId);
+  res.json({
+    address,
+    network: 'Polygon',
+    token: 'USDC',
+    amount: PRICE_USDC,
+    is_premium: user?.is_premium || false,
+    premium_expires_at: user?.premium_expires_at || null,
+    instructions: `Schick exakt ${PRICE_USDC} USDC (Polygon-Netzwerk) an diese Adresse. Premium wird innerhalb von 3 Minuten aktiviert.`
+  });
+});
 
-  try {
-    const rawBody = req.body.toString('utf8');
-    const params  = new URLSearchParams(rawBody);
-    const txnType = params.get('txn_type') || '';
-    const status  = params.get('payment_status') || '';
-    const custom  = params.get('custom') || '';        // "pw:USERNAME"
-    const subscrId= params.get('subscr_id') || '';
-    const payerEmail = params.get('payer_email') || '';
-
-    console.log(`[PayPal IPN] txn_type=${txnType} status=${status} custom=${custom} subscr_id=${subscrId}`);
-
-    // Verify with PayPal (returns "VERIFIED" or "INVALID")
-    const verification = await verifyPaypalIPN(rawBody);
-    if (verification !== 'VERIFIED') {
-      console.warn('[PayPal IPN] ⚠️  Not verified:', verification);
-      return;
-    }
-
-    // Extract username from custom field "pw:USERNAME"
-    const username = custom.startsWith('pw:') ? custom.slice(3).trim() : custom.trim();
-
-    if (txnType === 'subscr_payment' && status === 'Completed') {
-      // ── Monthly payment received → activate / keep premium ──────────────
-      const user = username ? await findByUsername(username) : null;
-      if (user) {
-        await updateUser(user.id, { is_premium: true, paypal_subscr_id: subscrId, paypal_email: payerEmail });
-        console.log(`✅ [PayPal] Premium activated for "${username}" (subscr_id=${subscrId})`);
-      } else {
-        console.warn(`[PayPal IPN] ⚠️  Unknown username: "${username}"`);
-      }
-
-    } else if (txnType === 'subscr_signup') {
-      // ── Subscription created (first signup, payment comes separately) ───
-      console.log(`[PayPal] New subscription signup for "${username}" (subscr_id=${subscrId})`);
-
-    } else if (['subscr_cancel', 'subscr_eot', 'subscr_failed', 'subscr_modify'].includes(txnType)) {
-      // ── Subscription cancelled / ended / failed → remove premium ────────
-      let user = subscrId ? await findByPaypalSubscr(subscrId) : null;
-      if (!user && username) user = await findByUsername(username);
-      if (user) {
-        if (txnType === 'subscr_cancel' || txnType === 'subscr_eot') {
-          await updateUser(user.id, { is_premium: false, paypal_subscr_id: null });
-          console.log(`❌ [PayPal] Premium removed for "${user.username}" (${txnType})`);
-        } else if (txnType === 'subscr_failed') {
-          // Failed payment — give a grace period (keep premium for now, PayPal will retry)
-          console.log(`⚠️  [PayPal] Payment failed for "${user.username}" — keeping premium during retry period`);
-        }
-      }
-    }
-  } catch (e) {
-    console.error('[PayPal IPN] Error:', e.message);
+// ── GET /api/check-payment — manually trigger a payment check for this user
+app.get('/api/check-payment', requireAuth, async (req, res) => {
+  const address = getUserCryptoAddress(req.user.userId);
+  if (!address) return res.status(503).json({ error: 'Crypto nicht konfiguriert' });
+  const balance = await getUSDCBalance(address);
+  if (balance >= PRICE_USDC) {
+    const expiresAt = new Date(Date.now() + BILLING_DAYS * 24 * 3600 * 1000).toISOString();
+    await updateUser(req.user.userId, { is_premium: true, premium_expires_at: expiresAt });
+    sweepUSDC(req.user.userId).catch(() => {});
+    return res.json({ ok: true, paid: true, balance, is_premium: true, premium_expires_at: expiresAt, message: '🎉 Zahlung erkannt! Premium ist jetzt aktiv.' });
   }
+  res.json({ ok: true, paid: false, balance, needed: PRICE_USDC, message: `${balance.toFixed(2)} / ${PRICE_USDC} USDC erhalten — warte auf Zahlung…` });
 });
 
 // ── POST /api/redeem-code-app — Electron app code redemption (no JWT needed) ──
@@ -427,10 +467,10 @@ app.post('/api/redeem-code-app', async (req, res) => {
 // ── GET /api/payment-info — public: what does premium cost + how to pay ──────
 app.get('/api/payment-info', (req, res) => {
   res.json({
-    price: PRICE_EUR,
-    currency: 'EUR',
-    paypalButtonId: PAYPAL_BUTTON_ID,
-    hasPaypal: !!PAYPAL_BUTTON_ID
+    price: PRICE_USDC,
+    currency: 'USDC',
+    network: 'Polygon',
+    cryptoEnabled: !!getHDWallet()
   });
 });
 
@@ -612,6 +652,13 @@ app.listen(PORT, () => {
   console.log(`\n🎵 Pulsewave server on http://localhost:${PORT}`);
   console.log(`   Mode: ${pool?'PostgreSQL':'JSON file'} · PayPal: ${PAYPAL_LINK||'(not set)'}`);
   console.log(`\n🔑 Admin-Passwort: ${ADMIN_PASSWORD}\n   Admin-Panel: http://localhost:${PORT}/admin\n`);
+
+  // Start crypto payment checker — runs every 3 minutes
+  if (getHDWallet()) {
+    console.log(`💰 Crypto payments: USDC on Polygon · Master wallet: ${getHDWallet().address}`);
+    setInterval(checkCryptoPayments, 3 * 60 * 1000);
+    setTimeout(checkCryptoPayments, 5000); // first check 5s after boot
+  }
 
   // Pre-warm search cache for all radio station queries so they respond instantly
   const PREWARM = [
